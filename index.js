@@ -1,93 +1,187 @@
-const fs = require("fs");                     
-const https = require("https");               
-const puppeteer = require("puppeteer");       
-const path = require("path");                 
+const puppeteer = require("puppeteer");
+const { exec } = require("child_process");
+const fs = require("fs");
 
-
-async function safeQuery(page, selector) {    // Define safeQuery to avoid crashing if querySelector fails
+async function safeQuery(page, selector) {
   try {
-    return await page.$(selector);            // Attempt to select the DOM element using Puppeteer's page.$
+    return await page.$(selector);
   } catch (e) {
-    return null;                              // Return null if any error occurs
+    return null;
   }
 }
 
-function sleep(ms) {                          // Define a sleep function to pause execution
-  return new Promise(res => setTimeout(res, ms)); // Return a promise that resolves after given milliseconds
+function sleep(ms) {
+  return new Promise(res => setTimeout(res, ms));
 }
 
-
-async function waitForVideo(page) {           // Function to wait until a <video> tag appears in the page
-  console.log("[Instagram] Waiting for <video> tag..."); // Log waiting status
-
-  while (true) {                              // Loop indefinitely until video is found
-    const video = await safeQuery(page, "video"); // Try selecting video element safely
-    if (video) {                              // If video element is found
-      console.log("[Instagram] VIDEO FOUND!"); // Log success
-      return video;                           // Return the found video element
+async function waitForVideo(page) {
+  console.log("[Instagram] Waiting for <video> tag...");
+  while (true) {
+    const video = await safeQuery(page, "video");
+    if (video) {
+      console.log("[Instagram] VIDEO FOUND!");
+      return video;
     }
-    await sleep(1000);                        // Wait 1 second before checking again
+    await sleep(1000);
   }
 }
 
-
-function downloadCompleteVideo(url) {         // Function to work with the found video URL
-  return new Promise((resolve, reject) => {   // Return a promise for async handling
-    const cleanUrl = url.split('&bytestart=')[0]; // Remove byte range parameter from the URL
-    console.log(`[Instagram] Found video URL: ${cleanUrl}`); // Log clean video URL
+function decodeEfgParameter(url) {
+  try {
+    const efgMatch = url.match(/efg=([^&]+)/);
+    if (!efgMatch) return null;
     
-    console.log(`[Instagram] Video URL would be downloaded here, but file saving is disabled`); // Log that downloading is disabled
-    resolve();                                // Resolve since no actual download is happening
+    const efgEncoded = decodeURIComponent(efgMatch[1]);
+    const efgDecoded = Buffer.from(efgEncoded, 'base64').toString('utf-8');
+    return JSON.parse(efgDecoded);
+  } catch (e) {
+    return null;
+  }
+}
+
+function analyzeMediaUrl(url, contentType) {
+  const efgData = decodeEfgParameter(url);
+  
+  let quality = "unknown";
+  
+  if (efgData && efgData.vencode_tag) {
+    const tag = efgData.vencode_tag.toLowerCase();
+    
+    // Extract quality from tag
+    const qualityMatch = tag.match(/(\d+)p/);
+    if (qualityMatch) {
+      quality = qualityMatch[1] + "p";
+    }
+    
+    // DASH streams separate audio and video
+    if (tag.includes('_audio') || (tag.includes('heaac') && !qualityMatch)) {
+      return { type: "AUDIO ONLY", quality: "N/A", efgTag: efgData.vencode_tag };
+    }
+    
+    if (qualityMatch && (tag.includes('vp9') || tag.includes('dash'))) {
+      return { type: "VIDEO ONLY", quality, efgTag: efgData.vencode_tag };
+    }
+    
+    if (qualityMatch && tag.includes('audio')) {
+      return { type: "VIDEO + AUDIO", quality, efgTag: efgData.vencode_tag };
+    }
+  }
+  
+  // Fallback to content-type
+  if (contentType.includes("video")) {
+    return { type: "VIDEO (Unknown)", quality, efgTag: null };
+  } else if (contentType.includes("audio")) {
+    return { type: "AUDIO ONLY", quality: "N/A", efgTag: null };
+  }
+  
+  return { type: "UNKNOWN", quality, efgTag: null };
+}
+
+function mergeVideoAudio(videoUrl, audioUrl, quality, callback) {
+  const outputFile = `output_video_${quality}.mp4`;
+  
+  console.log(`\n[FFmpeg] Merging ${quality} video with audio...`);
+  console.log(`[FFmpeg] Video: ${videoUrl.substring(0, 80)}...`);
+  console.log(`[FFmpeg] Audio: ${audioUrl.substring(0, 80)}...`);
+  
+  const ffmpegCommand = `ffmpeg -y -i "${videoUrl}" -i "${audioUrl}" -c:v copy -c:a aac "${outputFile}"`;
+  
+  exec(ffmpegCommand, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`[FFmpeg] Error merging ${quality}: ${error.message}`);
+      callback(false);
+      return;
+    }
+    console.log(`[FFmpeg] ✓ Successfully saved: ${outputFile}`);
+    callback(true);
   });
 }
 
+(async () => {
+  const videoUrls = new Map(); // Store video-only URLs by quality
+  let audioUrl = null;
+  let foundMedia = false;
 
-(async () => {                                // Start an immediately-invoked async function (main program)
-  let videoFound = false;                     // Flag to track if video is already detected to avoid duplicate handling
-
-  const browser = await puppeteer.launch({    // Launch Puppeteer browser instance
-    headless: false,                          // Run in non-headless mode to show the browser window
-    defaultViewport: null,                    // Use full available viewport instead of default
+  const browser = await puppeteer.launch({
+    headless: false,
+    defaultViewport: null,
   });
 
-  const page = await browser.newPage();       // Open a new browser tab
+  const page = await browser.newPage();
 
-  // Capture network requests for .mp4 or media files
-  page.on("response", async (response) => {   // Listen for each network response
-    if (videoFound) return;                   // If video already processed, ignore further responses
-    
-    const url = response.url();               // Get URL of the response
-    const contentType = response.headers()["content-type"] || ""; // Get content-type header or empty string
+  // Capture network requests
+  page.on("response", async (response) => {
+    const url = response.url();
+    const contentType = response.headers()["content-type"] || "";
 
-    if (contentType.includes("video/mp4")) {  // If the response is an MP4 video file
-      console.log("[Instagram] VIDEO URL FOUND:"); // Log video found
+    const isVideo = contentType.includes("video/mp4");
+    const isAudio = contentType.includes("audio/mp4") || 
+                    contentType.includes("audio/mpeg") ||
+                    contentType.includes("audio/aac") ||
+                    contentType.includes("audio/x-m4a");
 
-      videoFound = true;                      // Update flag to stop duplicate processing
-
-      try {
-        await downloadCompleteVideo(url);     // Attempt to process the video URL
-      } catch (err) {                         // Catch any errors
-        console.error("[Instagram] Error with video:", err.message); // Log the error
-      } finally {                             // Finally block runs regardless of success/failure
-        console.log("[Instagram] Video processing complete. Closing browser..."); // Log closing
-        await browser.close();                // Close the browser
+    if (isVideo || isAudio) {
+      const baseUrl = url.split('?')[0];
+      const mediaInfo = analyzeMediaUrl(url, contentType);
+      const cleanUrl = url.split('&bytestart=')[0];
+      
+      if (mediaInfo.type === "AUDIO ONLY" && !audioUrl) {
+        audioUrl = cleanUrl;
+        console.log(`\n[Instagram] AUDIO FOUND:`);
+        console.log(`  URL: ${cleanUrl.substring(0, 100)}...`);
+        foundMedia = true;
+      } 
+      else if (mediaInfo.type === "VIDEO ONLY" && !videoUrls.has(mediaInfo.quality)) {
+        videoUrls.set(mediaInfo.quality, cleanUrl);
+        console.log(`\n[Instagram] VIDEO FOUND (${mediaInfo.quality}):`);
+        console.log(`  URL: ${cleanUrl.substring(0, 100)}...`);
+        foundMedia = true;
       }
     }
   });
 
-  const url = "https://www.instagram.com/reel/DRSKOoujopt/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ=="; // Instagram reel URL
+  const url = "https://www.instagram.com/reel/DRSKOoujopt/?utm_source=ig_web_copy_link&igsh=NTc4MTIwNjQ2YQ==";
 
-  console.log("[Instagram] Opening reel page..."); // Log opening page
-  await page.goto(url, { waitUntil: "domcontentloaded" }); // Navigate to the reel and wait for DOM to load
+  console.log("[Instagram] Opening reel page...");
+  await page.goto(url, { waitUntil: "domcontentloaded" });
 
-  console.log("[Instagram] Page loaded. Detecting video..."); // Log that page is loaded
+  console.log("[Instagram] Page loaded. Detecting media...");
+  await waitForVideo(page);
 
-  await waitForVideo(page);     // Wait for <video> tag to appear
+  // Wait for all media to load
+  await sleep(10000);
 
-  setTimeout(async () => {                     // Start a 10-second fallback timer
-    if (!videoFound) {                        // If no video URL was captured within 10 seconds
-      console.log("[Instagram] Timeout: No video URL captured. Closing browser..."); // Log timeout
-      await browser.close();                  // Close the browser
-    }
-  }, 10000);                                   // Timeout set to 10,000 milliseconds (10 seconds)
-})();                                         // End of main async function execution
+  console.log("\n========================================");
+  console.log("CAPTURE SUMMARY:");
+  console.log(`  Audio URLs: ${audioUrl ? 1 : 0}`);
+  console.log(`  Video URLs: ${videoUrls.size}`);
+  console.log("========================================\n");
+
+  await browser.close();
+
+  // Merge videos with audio using FFmpeg
+  if (audioUrl && videoUrls.size > 0) {
+    console.log("[Instagram] Starting FFmpeg merge operations...\n");
+    
+    let completed = 0;
+    const total = videoUrls.size;
+
+    videoUrls.forEach((videoUrl, quality) => {
+      mergeVideoAudio(videoUrl, audioUrl, quality, (success) => {
+        completed++;
+        if (completed === total) {
+          console.log("\n========================================");
+          console.log("ALL MERGES COMPLETE!");
+          console.log(`Created ${total} output file(s)`);
+          console.log("========================================");
+        }
+      });
+    });
+
+  } else if (videoUrls.size > 0 && !audioUrl) {
+    console.log("[Instagram] Warning: Found video but no audio. Videos will have no sound.");
+  } else {
+    console.log("[Instagram] Error: No media files captured!");
+  }
+
+})();
