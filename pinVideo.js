@@ -1,5 +1,6 @@
 const puppeteer = require("puppeteer");
 const fs = require("fs");
+const { exec } = require("child_process");
 
 (async () => {
   const browser = await puppeteer.launch({
@@ -8,29 +9,24 @@ const fs = require("fs");
   });
 
   const page = await browser.newPage();
-  const urls = new Set();
+  let videoUrl = null;
+  let audioUrl = null;
 
   page.on("response", async (response) => {
     try {
       const url = response.url();
       const contentType = response.headers()["content-type"] || "";
 
-      // Capture video URLs
-      if (url.includes("pinimg.com") && (url.endsWith(".mp4") || contentType.includes("video/mp4"))) {
-        urls.add(url);
-        console.log("[Pinterest] Found video URL:", url);
+      // Capture main video (HLS or mp4)
+      if (!videoUrl && url.includes("pinimg.com") && (url.endsWith(".mp4") || contentType.includes("video"))) {
+        videoUrl = url;
+        console.log("[Pinterest] Found video URL:", videoUrl);
       }
 
-      // Capture audio URLs
-      if (url.includes("pinimg.com") && (contentType.includes("audio") || url.endsWith(".m4a") || url.endsWith(".aac"))) {
-        urls.add(url);
-        console.log("[Pinterest] Found audio URL:", url);
-      }
-
-      // Capture HLS playlists (may contain audio)
-      if (url.includes("pinimg.com") && contentType.includes("application/vnd.apple.mpegurl")) {
-        urls.add(url);
-        console.log("[Pinterest] Found HLS playlist URL (video/audio):", url);
+      // Capture audio (m4a, aac, or audio track)
+      if (!audioUrl && url.includes("pinimg.com") && (contentType.includes("audio") || url.endsWith(".m4a") || url.endsWith(".aac"))) {
+        audioUrl = url;
+        console.log("[Pinterest] Found audio URL:", audioUrl);
       }
 
     } catch (err) {
@@ -38,19 +34,36 @@ const fs = require("fs");
     }
   });
 
-  const pinUrl = "https://pin.it/qzGTTWbqH";
+  const pinUrl = "https://pin.it/1n8TXuhgK";
   console.log("[Pinterest] Opening Pinterest pin and monitoring network requests for 60s...");
   await page.goto(pinUrl, { waitUntil: "networkidle2" });
 
-  // Keep the page open for 60 seconds to capture all network requests
+  // Wait 60 seconds to capture video/audio requests
   await new Promise(res => setTimeout(res, 60000));
 
-  const uniqueUrls = Array.from(urls);
-  if (uniqueUrls.length > 0) {
-    fs.writeFileSync("pinterest_video_audio_urls.txt", uniqueUrls.join("\n"), "utf-8");
-    console.log("[Pinterest] Saved all detected video/audio URLs to pinterest_video_audio_urls.txt");
+  if (videoUrl) {
+    let ffmpegCommand = "";
+
+    if (audioUrl) {
+      // Merge video + audio into one MP4
+      ffmpegCommand = `ffmpeg -y -i "${videoUrl}" -i "${audioUrl}" -c copy output.mp4`;
+      console.log("[FFmpeg] Merging video and audio...");
+    } else {
+      // Only video available
+      ffmpegCommand = `ffmpeg -y -i "${videoUrl}" -c copy output.mp4`;
+      console.log("[FFmpeg] Only video found, saving as MP4...");
+    }
+
+    exec(ffmpegCommand, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`FFmpeg error: ${error.message}`);
+        return;
+      }
+      console.log("[FFmpeg] Video saved as output.mp4");
+    });
+
   } else {
-    console.log("[Pinterest] No video/audio URLs found!");
+    console.log("[Pinterest] No video URL found!");
   }
 
   await browser.close();
