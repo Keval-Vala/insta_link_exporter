@@ -25,7 +25,7 @@ async function downloadImage(url, filepath) {
         .trim();
 
     if (!username) {
-        console.log("❌ Could not extract username from URL.");
+        console.log("Could not extract username from URL.");
         return;
     }
 
@@ -52,7 +52,7 @@ async function downloadImage(url, filepath) {
     });
 
     if (!profilePic) {
-        console.log("❌ Could not locate profile picture.");
+        console.log("Could not locate profile picture.");
         await browser.close();
         return;
     }
@@ -62,7 +62,7 @@ async function downloadImage(url, filepath) {
     const filePath = `${username}_profile_dp.jpg`;
     await downloadImage(profilePic, filePath);
 
-    console.log(`✅ Downloaded profile DP as: ${filePath}`);
+    console.log(`Downloaded profile DP as: ${filePath}`);
 
     await browser.close();
 })();
