@@ -1,7 +1,7 @@
 const puppeteer = require("puppeteer");
 const { exec } = require("child_process");
 
-const DOUYIN_URL = "https://v.douyin.com/JjJOL1TURKc/";
+const DOUYIN_URL = "https://v.douyin.com/FdBaVdgxMD4/";
 
 (async () => {
   const browser = await puppeteer.launch({
