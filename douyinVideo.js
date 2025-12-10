@@ -1,11 +1,11 @@
 const puppeteer = require("puppeteer");
 const { exec } = require("child_process");
 
-const DOUYIN_URL = "https://v.douyin.com/FdBaVdgxMD4/";
+const DOUYIN_URL = "https://v.douyin.com/7-nOmqGDGUs/";
 
 (async () => {
   const browser = await puppeteer.launch({
-    headless: false,
+    headless: true,
     defaultViewport: null,
   });
 
@@ -48,7 +48,7 @@ const DOUYIN_URL = "https://v.douyin.com/FdBaVdgxMD4/";
   });
 
   if (!hasVideoTag) {
-    console.log("❌ No video found inside .leftContainer");
+    console.log("No video found inside .leftContainer");
     await browser.close();
     return;
   }
@@ -69,26 +69,9 @@ const DOUYIN_URL = "https://v.douyin.com/FdBaVdgxMD4/";
     console.log("[Douyin] Could not get video src from <video> tag, falling back to network interception.");
   }
 
-  // Use FFmpeg to merge video + audio if available
-  if (videoUrl) {
-    let ffmpegCommand = "";
+  // FFmpeg section completely removed ✅
 
-    if (audioUrl) {
-      ffmpegCommand = `ffmpeg -y -i "${videoUrl}" -i "${audioUrl}" -c copy output.mp4`;
-      console.log("[FFmpeg] Merging video and audio...");
-    } else {
-      ffmpegCommand = `ffmpeg -y -i "${videoUrl}" -c copy output.mp4`;
-      console.log("[FFmpeg] Only video found, saving as MP4...");
-    }
-
-    exec(ffmpegCommand, (error, stdout, stderr) => {
-      if (error) {
-        console.error(`FFmpeg error: ${error.message}`);
-        return;
-      }
-      console.log("[FFmpeg] Video saved as output.mp4");
-    });
-  } else {
+  if (!videoUrl) {
     console.log("[Douyin] Video URL not captured!");
   }
 
