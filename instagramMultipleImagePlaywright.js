@@ -1,0 +1,73 @@
+const { chromium } = require("playwright");
+const fs = require("fs");
+
+function sleep(ms) {
+  return new Promise(res => setTimeout(res, ms));
+}
+
+async function isCarousel(page) {
+  return (await page.locator('button[aria-label="Next"]').count()) > 0;
+}
+
+(async () => {
+  const browser = await chromium.launch({
+    headless: false,
+  });
+
+  const page = await browser.newPage();
+  const url = "https://www.instagram.com/p/DRChryXDybt/?utm_source=ig_web_copy_link&igsh=MzRlODBiNWFlZA==";
+
+  console.log("[Instagram] Opening post...");
+  await page.goto(url, { waitUntil: "networkidle" });
+
+  await sleep(2000); // Wait for images to load
+
+  try {
+    await page.waitForSelector('div[role="dialog"] svg[aria-label="Close"]', { timeout: 3000 });
+    await page.click('div[role="dialog"] svg[aria-label="Close"]');
+    console.log("Popup closed.");
+  } catch (e) {
+    console.log("No popup detected.");
+  }
+
+  const carousel = await isCarousel(page);
+
+  if (!carousel) {
+    console.log("No carousel detected, but still collecting image(s)...");
+  } else {
+    console.log("➡️ Carousel detected. Collecting all images...");
+  }
+
+  const imageUrls = new Set(); // unique URLs
+
+  while (true) {
+    // Get current visible image(s)
+    const imgs = await page.locator('div[role="presentation"] img').evaluateAll(
+      imgs => imgs.map(img => img.src)
+    );
+
+    imgs.forEach(src => imageUrls.add(src));
+
+    // Check if Next button exists
+    const nextBtn = page.locator('button[aria-label="Next"]');
+    const count = await nextBtn.count();
+    if (count === 0) break;
+
+    // Check if Next button is disabled (last slide)
+    const isDisabled = await nextBtn.isDisabled();
+    if (isDisabled) break;
+
+    await nextBtn.click();
+    await sleep(1000); // wait for next image to load
+  }
+
+  // Convert URLs to <img> tags
+  const html = Array.from(imageUrls)
+    .map(src => `<img src="${src}">`)
+    .join("\n");
+
+  fs.writeFileSync("result_multiple.html", html, "utf-8");
+  console.log(`✅ Saved ${imageUrls.size} images to result_multiple.html`);
+
+  await browser.close();
+})();
