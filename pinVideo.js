@@ -4,7 +4,7 @@ const { exec } = require("child_process");
 
 (async () => {
   const browser = await puppeteer.launch({
-    headless: false,
+    headless: true,
     defaultViewport: null,
   });
 
@@ -34,7 +34,7 @@ const { exec } = require("child_process");
     }
   });
 
-  const pinUrl = "https://pin.it/1n8TXuhgK";
+  const pinUrl = "https://pin.it/1YXwaexhM";
   console.log("[Pinterest] Opening Pinterest pin and monitoring network requests for 60s...");
   await page.goto(pinUrl, { waitUntil: "networkidle2" });
 
