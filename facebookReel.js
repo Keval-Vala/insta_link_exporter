@@ -1,77 +1,160 @@
 const puppeteer = require("puppeteer");
-const fs = require("fs");
+const { exec } = require("child_process");
+
+async function safeQuery(page, selector) {
+  try {
+    return await page.$(selector);
+  } catch (e) {
+    return null;
+  }
+}
+
+function sleep(ms) {
+  return new Promise(res => setTimeout(res, ms));
+}
+
+async function waitForVideo(page) {
+  console.log("[Facebook] Waiting for <video> tag...");
+  while (true) {
+    const video = await safeQuery(page, "video");
+    if (video) {
+      console.log("[Facebook] VIDEO FOUND!");
+      return video;
+    }
+    await sleep(500);
+  }
+}
+
+// New decodeEfgParameter function
+function decodeEfgParameter(url) {
+  try {
+    const efgMatch = url.match(/efg=([^&]+)/);
+    if (!efgMatch) return null;
+    const decoded = Buffer.from(decodeURIComponent(efgMatch[1]), "base64").toString("utf8");
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
+// Updated analyzeMediaUrl
+function analyzeMediaUrl(url, contentType) {
+  const efg = decodeEfgParameter(url);
+  let quality = "unknown";
+
+  if (efg && efg.vencode_tag) {
+    const tag = efg.vencode_tag.toLowerCase();
+    const qmatch = tag.match(/(\d{3,4})p/);
+    if (qmatch) quality = qmatch[1] + "p";
+
+    if (tag.includes("audio")) return { type: "AUDIO ONLY", quality: "N/A" };
+    return { type: "VIDEO ONLY", quality };
+  }
+
+  // fallback
+  if (contentType.includes("video")) return { type: "VIDEO ONLY", quality };
+  if (contentType.includes("audio")) return { type: "AUDIO ONLY", quality: "N/A" };
+
+  return { type: "UNKNOWN", quality };
+}
+
+function mergeVideoAudio(videoUrl, audioUrl, quality, callback) {
+  const outputFile = `fb_output_video.mp4`;
+
+  const cmd = `ffmpeg -y -i "${videoUrl}" -i "${audioUrl}" -c:v copy -c:a aac "${outputFile}"`;
+
+  exec(cmd, (err) => {
+    if (err) {
+      console.error(`[FFmpeg] Error merging:`, err.message);
+      callback(false);
+      return;
+    }
+    console.log(`[FFmpeg] ✓ Saved: ${outputFile}`);
+    callback(true);
+  });
+}
 
 (async () => {
-    const browser = await puppeteer.launch({
-        headless: false,
-        defaultViewport: null,
-    });
+  const videoUrls = new Map();
+  let audioUrl = null;
 
-    const page = await browser.newPage();
+  const browser = await puppeteer.launch({
+    headless: false,
+    defaultViewport: null,
+  });
 
-    // Store captured media URLs here
-    const mediaUrls = [];
+  const page = await browser.newPage();
 
-    // Helper: remove bytestart and byteend
-    function cleanMediaUrl(url) {
-        // Remove bytestart and byteend parameters
-        url = url.replace(/([&?])(bytestart|byteend)=[^&]+(&?)/g, (match, p1, p2, p3) => {
-            if (p1 === '?' && !p3) return ''; // ?param at the end
-            if (p1 === '?' && p3) return '?'; // ?param&nextParam
-            if (p1 === '&') return p3 ? '&' : ''; // &param or &param at the end
-            return '';
-        });
+  page.on("response", async (response) => {
+    const url = response.url();
+    const contentType = response.headers()["content-type"] || "";
 
-        // Remove trailing '?' if present
-        url = url.replace(/\?$/, '');
+    if (!contentType.includes("video") && !contentType.includes("audio")) return;
 
-        return url;
+    const cleanUrl = url.split("&bytestart=")[0];
+    const info = analyzeMediaUrl(url, contentType);
+
+    if (info.type === "AUDIO ONLY" && !audioUrl) {
+      audioUrl = cleanUrl;
+      console.log(`\n[AUDIO FOUND]\n${cleanUrl}`);
+      return;
     }
 
-    // Listen to all network responses
-    page.on("response", async (response) => {
-        try {
-            const request = response.request();
-            const url = request.url();
-            const resourceType = request.resourceType();
-
-            // Filter only media requests (video or audio)
-            if (resourceType === "media" || url.match(/\.(mp4|m3u8|mp3|wav|webm|ogg)(\?|$)/i)) {
-                const cleanUrl = cleanMediaUrl(url);
-                console.log(`[Network] Media detected: ${cleanUrl}`);
-                mediaUrls.push(cleanUrl);
-            }
-        } catch (e) {
-            // Ignore any errors
-        }
-    });
-
-    const reelUrl = "https://www.facebook.com/reel/1973810940040826";
-    console.log("[Facebook] Opening reel...");
-    await page.goto(reelUrl, { waitUntil: "networkidle2" });
-
-    // Wait for the login popup and close it if present
-    try {
-        await page.waitForSelector('div[aria-label="Close"]', { timeout: 5000 });
-        await page.click('div[aria-label="Close"]');
-        console.log("[Facebook] Closed login popup.");
-    } catch (err) {
-        console.log("[Facebook] Close button not found or timeout.");
+    if (info.type === "VIDEO ONLY") {
+      if (!videoUrls.has(info.quality)) {
+        videoUrls.set(info.quality, cleanUrl);
+        console.log(`\n[VIDEO FOUND - ${info.quality}]\n${cleanUrl}`);
+      }
     }
+  });
 
-    // Wait for some time to let media requests finish
-    await new Promise((resolve) => setTimeout(resolve, 8000));
+  const url = "https://www.facebook.com/share/r/17KVF5DhkS/"; // Replace REEL_ID with actual reel ID
 
-    // Show all captured media URLs
-    console.log("\n==============================");
-    console.log("Captured media URLs:");
-    mediaUrls.forEach((url, idx) => console.log(`${idx + 1}: ${url}`));
-    console.log("==============================\n");
+  console.log("[Facebook] Opening reel page...");
+  await page.goto(url, { waitUntil: "networkidle2" });
 
-    // Save all URLs to facebook_url.txt
-    fs.writeFileSync("facebook_url.txt", mediaUrls.join("\n"), "utf-8");
-    console.log("[Facebook] Media URLs saved to facebook_url.txt");
+  await waitForVideo(page);
 
-    // Browser remains open for inspection
-    console.log("[Facebook] Script finished. Browser remains open.");
+  // Trigger video playback to load different DASH qualities
+  console.log("[Facebook] Triggering video playback to load all qualities...");
+  await page.evaluate(() => {
+    const video = document.querySelector("video");
+    if (video) {
+      video.muted = true;
+      video.play().catch(() => {});
+      video.scrollIntoView();
+      video.pause();
+      video.play().catch(() => {});
+    }
+  });
+
+  // Wait & catch all qualities
+  console.log("[Facebook] Waiting for all qualities to load...");
+  await sleep(15000);
+
+  await browser.close();
+
+  console.log("\n========== FINAL RESULTS ==========");
+  console.log("Audio:", audioUrl ? "✔ Found" : "✘ Missing");
+
+  console.log("Video Qualities Found:");
+  console.log([...videoUrls.keys()].join(", ") || "None");
+  console.log("==================================\n");
+
+  if (!audioUrl || videoUrls.size === 0) {
+    console.log("[ERROR] Missing video or audio. Cannot merge.");
+    return;
+  }
+
+  console.log("[Facebook] Starting merge tasks...");
+
+  let completed = 0;
+  const total = videoUrls.size;
+
+  videoUrls.forEach((videoUrl, quality) => {
+    mergeVideoAudio(videoUrl, audioUrl, quality, () => {
+      completed++;
+      if (completed === total) console.log("\nALL MERGES COMPLETE!");
+    });
+  });
 })();
