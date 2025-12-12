@@ -75,11 +75,11 @@ function mergeVideoAudio(videoUrl, audioUrl, quality, callback) {
 }
 
 (async () => {
-  const videoUrls = new Map();
+  let videoUrl = null;
   let audioUrl = null;
 
   const browser = await puppeteer.launch({
-    headless: false,
+    headless: true,
     defaultViewport: null,
   });
 
@@ -100,23 +100,21 @@ function mergeVideoAudio(videoUrl, audioUrl, quality, callback) {
       return;
     }
 
-    if (info.type === "VIDEO ONLY") {
-      if (!videoUrls.has(info.quality)) {
-        videoUrls.set(info.quality, cleanUrl);
-        console.log(`\n[VIDEO FOUND - ${info.quality}]\n${cleanUrl}`);
-      }
+    if (info.type === "VIDEO ONLY" && !videoUrl) {
+      videoUrl = cleanUrl;
+      console.log(`\n[VIDEO FOUND - ${info.quality}]\n${cleanUrl}`);
     }
   });
 
-  const url = "https://www.facebook.com/share/r/17KVF5DhkS/"; // Replace REEL_ID with actual reel ID
+  const url = "https://www.facebook.com/reel/866814072966145"; // Replace REEL_ID with actual reel ID
 
   console.log("[Facebook] Opening reel page...");
   await page.goto(url, { waitUntil: "networkidle2" });
 
   await waitForVideo(page);
 
-  // Trigger video playback to load different DASH qualities
-  console.log("[Facebook] Triggering video playback to load all qualities...");
+  // Trigger video playback to load video
+  console.log("[Facebook] Triggering video playback...");
   await page.evaluate(() => {
     const video = document.querySelector("video");
     if (video) {
@@ -128,33 +126,23 @@ function mergeVideoAudio(videoUrl, audioUrl, quality, callback) {
     }
   });
 
-  // Wait & catch all qualities
-  console.log("[Facebook] Waiting for all qualities to load...");
-  await sleep(15000);
+  // Wait a bit for video & audio requests to load
+  await sleep(5000);
 
   await browser.close();
 
   console.log("\n========== FINAL RESULTS ==========");
   console.log("Audio:", audioUrl ? "✔ Found" : "✘ Missing");
-
-  console.log("Video Qualities Found:");
-  console.log([...videoUrls.keys()].join(", ") || "None");
+  console.log("Video:", videoUrl ? "✔ Found" : "✘ Missing");
   console.log("==================================\n");
 
-  if (!audioUrl || videoUrls.size === 0) {
+  if (!audioUrl || !videoUrl) {
     console.log("[ERROR] Missing video or audio. Cannot merge.");
     return;
   }
 
-  console.log("[Facebook] Starting merge tasks...");
-
-  let completed = 0;
-  const total = videoUrls.size;
-
-  videoUrls.forEach((videoUrl, quality) => {
-    mergeVideoAudio(videoUrl, audioUrl, quality, () => {
-      completed++;
-      if (completed === total) console.log("\nALL MERGES COMPLETE!");
-    });
+  console.log("[Facebook] Starting merge task...");
+  mergeVideoAudio(videoUrl, audioUrl, "unknown", () => {
+    console.log("\nMERGE COMPLETE!");
   });
 })();
