@@ -88,8 +88,10 @@ function mergeVideoAudio(videoUrl, audioUrl, quality, callback) {
   page.on("response", async (response) => {
     const url = response.url();
     const contentType = response.headers()["content-type"] || "";
-
-    if (!contentType.includes("video") && !contentType.includes("audio")) return;
+    const cacheControl = response.headers()["cache-control"] || "no-cache";
+    const age = response.headers()["age"] || "0";
+    const etag = response.headers()["etag"] || "not-found";
+    const lastModified = response.headers()["last-modified"] || "not-found";
 
     const cleanUrl = url.split("&bytestart=")[0];
     const info = analyzeMediaUrl(url, contentType);
@@ -106,10 +108,17 @@ function mergeVideoAudio(videoUrl, audioUrl, quality, callback) {
     }
   });
 
-  const url = "https://www.facebook.com/reel/866814072966145"; // Replace REEL_ID with actual reel ID
+  const url = "https://www.facebook.com/reel/1333146168398787"; // Replace REEL_ID with actual reel ID
 
   console.log("[Facebook] Opening reel page...");
   await page.goto(url, { waitUntil: "networkidle2" });
+
+  // Refresh the page to ensure fresh URLs
+  console.log("[Facebook] Refreshing the page to get fresh URLs...");
+  await page.reload({ waitUntil: "networkidle2" });
+
+  // Wait a bit before continuing to give time for resources to reload
+  await sleep(3000);  // Adjust this sleep duration if necessary
 
   await waitForVideo(page);
 
@@ -119,10 +128,10 @@ function mergeVideoAudio(videoUrl, audioUrl, quality, callback) {
     const video = document.querySelector("video");
     if (video) {
       video.muted = true;
-      video.play().catch(() => {});
+      video.play().catch(() => { });
       video.scrollIntoView();
       video.pause();
-      video.play().catch(() => {});
+      video.play().catch(() => { });
     }
   });
 
